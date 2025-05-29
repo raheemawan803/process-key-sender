@@ -142,6 +142,7 @@ fn create_config_from_args(matches: &clap::ArgMatches) -> Result<Config> {
         verbose,
         loop_sequence: true,
         repeat_count: 0,
+        restore_focus: true,
     })
 }
 

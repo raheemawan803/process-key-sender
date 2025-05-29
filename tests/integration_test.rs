@@ -159,6 +159,7 @@ fn test_config_validation_errors() {
         verbose: false,
         loop_sequence: true,
         repeat_count: 0,
+        restore_focus: true
     };
     
     assert!(config.validate().is_err());

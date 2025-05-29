@@ -19,6 +19,8 @@ pub struct Config {
     pub loop_sequence: bool,
     #[serde(default)]
     pub repeat_count: u32,
+    #[serde(default = "default_restore_focus")]
+    pub restore_focus: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,6 +87,12 @@ fn default_loop_sequence() -> bool {
     true
 }
 
+fn default_restore_focus() -> bool {
+    true
+}
+
+// ... rest of the config.rs implementation stays the same ...
+
 impl Config {
     /// Load configuration from a JSON file
     pub fn from_file(path: &str) -> Result<Self> {
@@ -100,7 +108,7 @@ impl Config {
     /// Save configuration to a JSON file
     pub fn save_to_file(&self, path: &str) -> Result<()> {
         // Convert Duration back to string format for saving
-        let mut config_for_save = self.clone();
+        let config_for_save = self.clone();
 
         // We need to serialize with string durations for human readability
         let json = serde_json::to_string_pretty(&ConfigForSave::from(config_for_save))
@@ -113,7 +121,6 @@ impl Config {
     }
 
     /// Validate the configuration
-    #[allow(dead_code)]
     pub fn validate(&self) -> Result<()> {
         if self.process_name.trim().is_empty() {
             anyhow::bail!("process_name cannot be empty");
@@ -166,6 +173,7 @@ struct ConfigForSave {
     verbose: bool,
     loop_sequence: bool,
     repeat_count: u32,
+    restore_focus: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -197,6 +205,7 @@ impl From<Config> for ConfigForSave {
             verbose: config.verbose,
             loop_sequence: config.loop_sequence,
             repeat_count: config.repeat_count,
+            restore_focus: config.restore_focus,
         }
     }
 }
@@ -266,6 +275,7 @@ mod tests {
         assert_eq!(config.independent_keys[0].interval, Duration::from_millis(1000));
         assert_eq!(config.independent_keys[1].key, "a");
         assert_eq!(config.independent_keys[1].interval, Duration::from_secs(5));
+        assert!(config.restore_focus); // Test default value
     }
 
     #[test]
@@ -282,6 +292,7 @@ mod tests {
             verbose: false,
             loop_sequence: true,
             repeat_count: 0,
+            restore_focus: true,
         };
 
         assert!(config.validate().is_ok());

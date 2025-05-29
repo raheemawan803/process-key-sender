@@ -3,9 +3,11 @@ use std::collections::HashMap;
 
 #[cfg(windows)]
 use winapi::um::winuser::{
-    PostMessageA, WM_KEYDOWN, WM_KEYUP, VK_SPACE, VK_RETURN, VK_TAB,
-    VK_ESCAPE, VK_SHIFT, VK_CONTROL, VK_MENU, EnumWindows, GetWindowThreadProcessId,
-    IsWindowVisible, GetWindowTextA, SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT
+    VK_SPACE, VK_RETURN, VK_TAB, VK_ESCAPE, VK_SHIFT, VK_CONTROL, VK_MENU,
+    EnumWindows, GetWindowThreadProcessId, IsWindowVisible, GetWindowTextA,
+    SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+    SetForegroundWindow, SetActiveWindow, BringWindowToTop, ShowWindow,
+    SW_RESTORE, GetForegroundWindow
 };
 #[cfg(windows)]
 use winapi::shared::windef::HWND;
@@ -41,27 +43,33 @@ impl KeySender {
 
             // Function keys
             for i in 1..=12 {
-                key_map.insert(format!("f{}", i), (0x70 + i - 1) as u32); // VK_F1 to VK_F12
+                key_map.insert(format!("f{}", i), (0x70 + i - 1) as u32);
             }
 
             // Number keys
             for i in 0..=9 {
-                key_map.insert(i.to_string(), (0x30 + i) as u32); // VK_0 to VK_9
+                key_map.insert(i.to_string(), (0x30 + i) as u32);
+            }
+
+            // Letter keys
+            for i in 0..26 {
+                let letter = (b'a' + i) as char;
+                key_map.insert(letter.to_string(), (0x41 + i) as u32); // VK_A to VK_Z
             }
 
             // Arrow keys
-            key_map.insert("left".to_string(), 0x25); // VK_LEFT
-            key_map.insert("up".to_string(), 0x26); // VK_UP
-            key_map.insert("right".to_string(), 0x27); // VK_RIGHT
-            key_map.insert("down".to_string(), 0x28); // VK_DOWN
+            key_map.insert("left".to_string(), 0x25);
+            key_map.insert("up".to_string(), 0x26);
+            key_map.insert("right".to_string(), 0x27);
+            key_map.insert("down".to_string(), 0x28);
 
-            // Additional common keys
-            key_map.insert("backspace".to_string(), 0x08); // VK_BACK
-            key_map.insert("delete".to_string(), 0x2E); // VK_DELETE
-            key_map.insert("home".to_string(), 0x24); // VK_HOME
-            key_map.insert("end".to_string(), 0x23); // VK_END
-            key_map.insert("pageup".to_string(), 0x21); // VK_PRIOR
-            key_map.insert("pagedown".to_string(), 0x22); // VK_NEXT
+            // Additional keys
+            key_map.insert("backspace".to_string(), 0x08);
+            key_map.insert("delete".to_string(), 0x2E);
+            key_map.insert("home".to_string(), 0x24);
+            key_map.insert("end".to_string(), 0x23);
+            key_map.insert("pageup".to_string(), 0x21);
+            key_map.insert("pagedown".to_string(), 0x22);
 
             Ok(Self { key_map })
         }
@@ -72,7 +80,6 @@ impl KeySender {
         }
     }
 
-    /// Validate a key string without actually sending it
     pub fn parse_key_for_validation(&self, key: &str) -> Result<()> {
         #[cfg(windows)]
         {
@@ -82,7 +89,6 @@ impl KeySender {
 
         #[cfg(unix)]
         {
-            // For Unix, just do basic validation for now
             if key.trim().is_empty() {
                 anyhow::bail!("Key cannot be empty");
             }
@@ -93,12 +99,14 @@ impl KeySender {
     pub fn send_key_to_window(&self, window_id: u64, key: &str) -> Result<()> {
         #[cfg(windows)]
         {
-            // First try to find the actual window handle for this PID
             let pid = window_id as u32;
+
+            // Try to find the actual window handle
             if let Some(hwnd) = self.find_window_by_pid(pid) {
-                self.send_key_windows(hwnd as isize, key)
+                // Method: Focus window temporarily, send key, restore focus
+                self.send_key_with_focus_restore(hwnd, key)
             } else {
-                // Fallback: use global key sending (less precise but should work)
+                // Fallback: Global SendInput
                 self.send_key_global_windows(key)
             }
         }
@@ -110,23 +118,30 @@ impl KeySender {
     }
 
     #[cfg(windows)]
-    fn find_window_by_pid(&self, _target_pid: u32) -> Option<HWND> {
-        let mut result = None;
+    fn find_window_by_pid(&self, target_pid: u32) -> Option<HWND> {
+        struct EnumData {
+            target_pid: u32,
+            result: Option<HWND>,
+        }
+
+        let mut enum_data = EnumData {
+            target_pid,
+            result: None,
+        };
 
         unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: isize) -> i32 {
-            let result_ptr = lparam as *mut Option<HWND>;
+            let enum_data = &mut *(lparam as *mut EnumData);
 
             unsafe {
-                let mut _window_pid = 0;
-                GetWindowThreadProcessId(hwnd, &mut _window_pid);
+                let mut window_pid = 0;
+                GetWindowThreadProcessId(hwnd, &mut window_pid);
 
-                // For now, just take the first visible window
-                if IsWindowVisible(hwnd) != 0 {
+                if window_pid == enum_data.target_pid && IsWindowVisible(hwnd) != 0 {
                     let mut title = [0u8; 256];
                     let len = GetWindowTextA(hwnd, title.as_mut_ptr() as *mut i8, 256);
 
                     if len > 0 {
-                        *result_ptr = Some(hwnd);
+                        enum_data.result = Some(hwnd);
                         return 0; // Stop enumeration
                     }
                 }
@@ -135,36 +150,63 @@ impl KeySender {
             1 // Continue enumeration
         }
 
-        // For simplicity, let's just try to find any window
-        // In a real implementation, you'd match by PID
         unsafe {
-            EnumWindows(Some(enum_proc), &mut result as *mut _ as isize);
+            EnumWindows(Some(enum_proc), &mut enum_data as *mut _ as isize);
+        }
+
+        enum_data.result
+    }
+
+    #[cfg(windows)]
+    fn send_key_with_focus_restore(&self, hwnd: HWND, key: &str) -> Result<()> {
+        // Store current foreground window to restore later
+        let original_window = unsafe { GetForegroundWindow() };
+
+        // Only change focus if the target window is not already focused
+        let needs_focus_change = original_window != hwnd;
+
+        if needs_focus_change {
+            // Bring target window to foreground
+            self.ensure_window_focus(hwnd)?;
+        }
+
+        // Send the key using global SendInput
+        let result = self.send_key_global_windows(key);
+
+        // Restore original window focus if we changed it
+        if needs_focus_change && !original_window.is_null() {
+            // Small delay to ensure the key is processed
+            std::thread::sleep(std::time::Duration::from_millis(50));
+
+            // Restore focus to original window
+            unsafe {
+                SetForegroundWindow(original_window);
+                SetActiveWindow(original_window);
+            }
         }
 
         result
     }
 
     #[cfg(windows)]
-    fn send_key_windows(&self, hwnd: isize, key: &str) -> Result<()> {
-        // Handle key combinations (e.g., "ctrl+c")
-        if key.contains('+') {
-            return self.send_key_combination_windows(hwnd, key);
-        }
-
-        let vk_code = self.parse_key_windows(key)?;
-
+    fn ensure_window_focus(&self, hwnd: HWND) -> Result<()> {
         unsafe {
-            PostMessageA(hwnd as *mut _, WM_KEYDOWN, vk_code as usize, 0);
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            PostMessageA(hwnd as *mut _, WM_KEYUP, vk_code as usize, 0);
-        }
+            // Restore window if minimized
+            ShowWindow(hwnd, SW_RESTORE);
 
+            // Bring to top and set focus
+            BringWindowToTop(hwnd);
+            SetActiveWindow(hwnd);
+            SetForegroundWindow(hwnd);
+
+            // Minimal delay to ensure focus is established
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         Ok(())
     }
 
     #[cfg(windows)]
     fn send_key_global_windows(&self, key: &str) -> Result<()> {
-        // Global key sending using SendInput
         if key.contains('+') {
             return self.send_key_combination_global_windows(key);
         }
@@ -172,64 +214,45 @@ impl KeySender {
         let vk_code = self.parse_key_windows(key)?;
 
         unsafe {
-            let mut input = INPUT {
+            // Key DOWN
+            let mut input_down = INPUT {
                 type_: INPUT_KEYBOARD,
                 u: std::mem::zeroed(),
             };
 
-            *input.u.ki_mut() = KEYBDINPUT {
+            *input_down.u.ki_mut() = KEYBDINPUT {
                 wVk: vk_code as u16,
                 wScan: 0,
-                dwFlags: 0,
+                dwFlags: 0, // Key down
                 time: 0,
                 dwExtraInfo: 0,
             };
 
-            SendInput(1, &mut input, std::mem::size_of::<INPUT>() as i32);
+            // Key UP
+            let mut input_up = INPUT {
+                type_: INPUT_KEYBOARD,
+                u: std::mem::zeroed(),
+            };
 
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            *input_up.u.ki_mut() = KEYBDINPUT {
+                wVk: vk_code as u16,
+                wScan: 0,
+                dwFlags: KEYEVENTF_KEYUP,
+                time: 0,
+                dwExtraInfo: 0,
+            };
 
-            // Key up
-            input.u.ki_mut().dwFlags = 0x0002; // KEYEVENTF_KEYUP
-            SendInput(1, &mut input, std::mem::size_of::<INPUT>() as i32);
-        }
+            // Send key down
+            let result1 = SendInput(1, &mut input_down, std::mem::size_of::<INPUT>() as i32);
 
-        Ok(())
-    }
+            // Realistic key press duration
+            std::thread::sleep(std::time::Duration::from_millis(30));
 
-    #[cfg(windows)]
-    fn send_key_combination_windows(&self, hwnd: isize, key_combo: &str) -> Result<()> {
-        let parts: Vec<&str> = key_combo.split('+').map(|s| s.trim()).collect();
-        if parts.len() < 2 {
-            anyhow::bail!("Invalid key combination format: {}", key_combo);
-        }
+            // Send key up
+            let result2 = SendInput(1, &mut input_up, std::mem::size_of::<INPUT>() as i32);
 
-        let mut modifier_codes = Vec::new();
-        let main_key = parts.last().unwrap();
-
-        // Parse modifiers
-        for modifier in &parts[..parts.len() - 1] {
-            let vk_code = self.parse_key_windows(modifier)?;
-            modifier_codes.push(vk_code);
-        }
-
-        // Parse main key
-        let main_key_code = self.parse_key_windows(main_key)?;
-
-        unsafe {
-            // Press modifiers
-            for &modifier_code in &modifier_codes {
-                PostMessageA(hwnd as *mut _, WM_KEYDOWN, modifier_code as usize, 0);
-            }
-
-            // Press main key
-            PostMessageA(hwnd as *mut _, WM_KEYDOWN, main_key_code as usize, 0);
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            PostMessageA(hwnd as *mut _, WM_KEYUP, main_key_code as usize, 0);
-
-            // Release modifiers (in reverse order)
-            for &modifier_code in modifier_codes.iter().rev() {
-                PostMessageA(hwnd as *mut _, WM_KEYUP, modifier_code as usize, 0);
+            if result1 == 0 || result2 == 0 {
+                anyhow::bail!("SendInput failed for key '{}' (results: {}, {})", key, result1, result2);
             }
         }
 
@@ -238,7 +261,6 @@ impl KeySender {
 
     #[cfg(windows)]
     fn send_key_combination_global_windows(&self, key_combo: &str) -> Result<()> {
-        // Similar to send_key_combination_windows but using SendInput
         let parts: Vec<&str> = key_combo.split('+').map(|s| s.trim()).collect();
         if parts.len() < 2 {
             anyhow::bail!("Invalid key combination format: {}", key_combo);
@@ -253,10 +275,11 @@ impl KeySender {
             modifier_codes.push(vk_code);
         }
 
-        // Parse main key
         let main_key_code = self.parse_key_windows(main_key)?;
 
         unsafe {
+            let mut inputs = Vec::new();
+
             // Press modifiers
             for &modifier_code in &modifier_codes {
                 let mut input = INPUT {
@@ -270,30 +293,38 @@ impl KeySender {
                     time: 0,
                     dwExtraInfo: 0,
                 };
-                SendInput(1, &mut input, std::mem::size_of::<INPUT>() as i32);
+                inputs.push(input);
             }
 
             // Press main key
-            let mut input = INPUT {
+            let mut main_down = INPUT {
                 type_: INPUT_KEYBOARD,
                 u: std::mem::zeroed(),
             };
-            *input.u.ki_mut() = KEYBDINPUT {
+            *main_down.u.ki_mut() = KEYBDINPUT {
                 wVk: main_key_code as u16,
                 wScan: 0,
                 dwFlags: 0,
                 time: 0,
                 dwExtraInfo: 0,
             };
-            SendInput(1, &mut input, std::mem::size_of::<INPUT>() as i32);
-
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            inputs.push(main_down);
 
             // Release main key
-            input.u.ki_mut().dwFlags = 0x0002; // KEYEVENTF_KEYUP
-            SendInput(1, &mut input, std::mem::size_of::<INPUT>() as i32);
+            let mut main_up = INPUT {
+                type_: INPUT_KEYBOARD,
+                u: std::mem::zeroed(),
+            };
+            *main_up.u.ki_mut() = KEYBDINPUT {
+                wVk: main_key_code as u16,
+                wScan: 0,
+                dwFlags: KEYEVENTF_KEYUP,
+                time: 0,
+                dwExtraInfo: 0,
+            };
+            inputs.push(main_up);
 
-            // Release modifiers (in reverse order)
+            // Release modifiers (reverse order)
             for &modifier_code in modifier_codes.iter().rev() {
                 let mut input = INPUT {
                     type_: INPUT_KEYBOARD,
@@ -302,11 +333,23 @@ impl KeySender {
                 *input.u.ki_mut() = KEYBDINPUT {
                     wVk: modifier_code as u16,
                     wScan: 0,
-                    dwFlags: 0x0002, // KEYEVENTF_KEYUP
+                    dwFlags: KEYEVENTF_KEYUP,
                     time: 0,
                     dwExtraInfo: 0,
                 };
-                SendInput(1, &mut input, std::mem::size_of::<INPUT>() as i32);
+                inputs.push(input);
+            }
+
+            // Send all inputs at once
+            let result = SendInput(
+                inputs.len() as u32,
+                inputs.as_mut_ptr(),
+                std::mem::size_of::<INPUT>() as i32
+            );
+
+            if result != inputs.len() as u32 {
+                anyhow::bail!("SendInput failed for key combination '{}' (sent {}/{})", 
+                    key_combo, result, inputs.len());
             }
         }
 
@@ -317,17 +360,9 @@ impl KeySender {
     fn parse_key_windows(&self, key: &str) -> Result<u32> {
         let key_lower = key.to_lowercase();
 
-        // Check special keys first
+        // Check map first
         if let Some(&vk_code) = self.key_map.get(&key_lower) {
             return Ok(vk_code);
-        }
-
-        // Handle single letter keys
-        if key_lower.len() == 1 {
-            let ch = key_lower.chars().next().unwrap();
-            if ch.is_ascii_alphabetic() {
-                return Ok(ch.to_uppercase().next().unwrap() as u32);
-            }
         }
 
         anyhow::bail!("Unsupported key: {}", key)
@@ -335,7 +370,6 @@ impl KeySender {
 
     #[cfg(unix)]
     fn send_key_unix(&self, _window_id: u64, _key: &str) -> Result<()> {
-        // TODO: Implement X11 key sending
         anyhow::bail!("Unix key sending not yet implemented")
     }
 }
