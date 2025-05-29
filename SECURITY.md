@@ -16,7 +16,7 @@ We actively maintain and provide security updates for the following versions:
 If you discover a security vulnerability in Process Key Sender, please report it responsibly:
 
 1. **DO NOT** create a public GitHub issue for security vulnerabilities
-2. **Email us directly** at: [security@process-key-sender.dev](mailto:security@process-key-sender.dev)
+2. **Email us directly** at: [info@kylehub.dev](mailto:info@kylehub.dev)
 3. **Use encrypted communication** if possible (PGP key available on request)
 
 ### **What to Include**
@@ -198,13 +198,13 @@ Security researchers who responsibly disclose vulnerabilities will be:
 ## 📞 **Contact Information**
 
 ### **Security Team**
-- **Primary Contact**: [security@process-key-sender.dev](mailto:security@process-key-sender.dev)
+- **Primary Contact**: [info@kylehub.dev](mailto:info@kylehub.dev)
 - **Maintainer**: KyleDerZweite
 - **GitHub**: [@KyleDerZweite](https://github.com/KyleDerZweite)
 
 ### **Emergency Contact**
 For critical security vulnerabilities that pose immediate risk:
-- **Email**: [urgent-security@process-key-sender.dev](mailto:urgent-security@process-key-sender.dev)
+- **Email**: [info@kylehub.dev](mailto:info@kylehub.dev) [WIP]
 - **Response Time**: Within 24 hours
 
 ## 🔄 **Security Updates**
