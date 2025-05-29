@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 #[cfg(windows)]
 use winapi::um::winuser::{
-    FindWindowA, PostMessageA, WM_KEYDOWN, WM_KEYUP, VK_SPACE, VK_RETURN, VK_TAB,
+    PostMessageA, WM_KEYDOWN, WM_KEYUP, VK_SPACE, VK_RETURN, VK_TAB,
     VK_ESCAPE, VK_SHIFT, VK_CONTROL, VK_MENU, EnumWindows, GetWindowThreadProcessId,
     IsWindowVisible, GetWindowTextA
 };
@@ -86,16 +86,15 @@ impl KeySender {
     }
 
     #[cfg(windows)]
-    fn find_window_by_pid(&self, target_pid: u32) -> Option<HWND> {
+    fn find_window_by_pid(&self, _target_pid: u32) -> Option<HWND> {
         let mut result = None;
 
         unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: isize) -> i32 {
             let result_ptr = lparam as *mut Option<HWND>;
-            let target_pid = 0; // We'll handle this differently
 
             unsafe {
-                let mut window_pid = 0;
-                GetWindowThreadProcessId(hwnd, &mut window_pid);
+                let mut _window_pid = 0;
+                GetWindowThreadProcessId(hwnd, &mut _window_pid);
 
                 // For now, just take the first visible window
                 if IsWindowVisible(hwnd) != 0 {

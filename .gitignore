@@ -33,6 +33,3 @@ Thumbs.db
 
 # Keep example configs
 !example-*.json
-
-# Keep the compiled pks.exe
-!target/release/pks.exe

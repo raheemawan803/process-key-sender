@@ -1,13 +1,6 @@
 use anyhow::Result;
 use sysinfo::{System, ProcessesToUpdate};
 
-#[cfg(windows)]
-use winapi::um::winuser::{FindWindowA, FindWindowW};
-#[cfg(windows)]
-use winapi::shared::windef::HWND;
-#[cfg(windows)]
-use std::ffi::CString;
-
 pub struct ProcessFinder {
     system: System,
 }
