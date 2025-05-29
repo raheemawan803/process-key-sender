@@ -1,40 +1,34 @@
 [package]
 name = "process-key-sender"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
-authors = ["KyleDerZweite"]
-description = "A cross-platform tool for sending keystrokes to specific processes at configurable intervals"
-license = "MIT"
+authors = ["KyleDerZweite <kyle@process-key-sender.dev>"]
+description = "Cross-platform keystroke automation tool for specific processes"
 repository = "https://github.com/KyleDerZweite/process-key-sender"
-keywords = ["automation", "gaming", "keystrokes", "process", "cli"]
-categories = ["command-line-utilities", "games"]
-
-[dependencies]
-clap = { version = "4.5", features = ["derive"] }
-sysinfo = "0.35.1"
-tokio = { version = "1.45.0", features = ["full"] }
-global-hotkey = "0.5"
-ctrlc = "3.4.7"
-log = "0.4"
-env_logger = "0.11.8"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-anyhow = "1.0"
-colored = "3.0.0"
-
-[target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = [
-    "winuser",
-    "processthreadsapi",
-    "handleapi",
-    "tlhelp32",
-    "winnt"
-] }
-
-[target.'cfg(unix)'.dependencies]
-x11 = { version = "2.21", features = ["xlib", "xtest"] }
-libc = "0.2"
+license = "MIT"
+keywords = ["automation", "cli", "cross-platform", "accessibility", "productivity"]
+categories = ["command-line-utilities", "accessibility"]
+rust-version = "1.85.0"
 
 [[bin]]
 name = "pks"
 path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.0", features = ["derive"] }
+colored = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sysinfo = "0.30"
+tokio = { version = "1.0", features = ["full"] }
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winuser", "processthreadsapi", "psapi"] }
+
+[dev-dependencies]
+tempfile = "3.0"
+
+[lib]
+name = "process_key_sender"
+path = "src/lib.rs"

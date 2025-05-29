@@ -1,5 +1,5 @@
 use anyhow::Result;
-use sysinfo::{System, ProcessesToUpdate};
+use sysinfo::{System};
 
 pub struct ProcessFinder {
     system: System,
@@ -22,12 +22,12 @@ impl ProcessFinder {
 
     pub fn find_process_window(&mut self, process_name: &str) -> Result<Option<u64>> {
         // Refresh all processes
-        self.system.refresh_processes(ProcessesToUpdate::All, true);
+        self.system.refresh_processes();
 
         let process_name_lower = process_name.to_lowercase();
 
         for (pid, process) in self.system.processes() {
-            let name = process.name().to_string_lossy().to_lowercase();
+            let name = process.name().to_lowercase();
             if name.contains(&process_name_lower) {
                 #[cfg(windows)]
                 {
@@ -46,15 +46,17 @@ impl ProcessFinder {
 
         Ok(None)
     }
-
+    
+    #[deprecated]
+    #[allow(dead_code)]
     pub fn is_process_running(&mut self, process_name: &str) -> Result<bool> {
         // Refresh all processes
-        self.system.refresh_processes(ProcessesToUpdate::All, true);
+        self.system.refresh_processes();
 
         let process_name_lower = process_name.to_lowercase();
 
         for (_pid, process) in self.system.processes() {
-            let name = process.name().to_string_lossy().to_lowercase();
+            let name = process.name().to_lowercase();
             if name.contains(&process_name_lower) {
                 return Ok(true);
             }

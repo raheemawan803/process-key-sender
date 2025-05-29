@@ -1,280 +1,298 @@
 use anyhow::Result;
-use clap::Parser;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer};
 use std::time::Duration;
 
-#[derive(Parser)]
-#[command(name = "pks")]
-#[command(about = "A tool for sending keystrokes to specific processes")]
-#[command(version = "0.1.0")]
-#[command(author = "KyleDerZweite")]
-pub struct Args {
-    /// Name of the target process (e.g., "game.exe", "notepad")
-    #[arg(short, long)]
-    pub process: Option<String>,  // Made optional
-
-    /// Key to send (e.g., "r", "space", "f1", "ctrl+c")
-    #[arg(short, long)]
-    pub key: Option<String>,
-
-    /// Interval between keystrokes in milliseconds
-    #[arg(short, long, default_value = "1000")]
-    pub interval: u64,
-
-    /// Key sequence with custom intervals (e.g., "r:1000,space:500,e:2000")
-    #[arg(short = 's', long)]
-    pub sequence: Option<String>,
-
-    /// Multiple independent keys with intervals (e.g., "r:1000;a:5000")
-    #[arg(long)]
-    pub independent_keys: Option<String>,
-
-    /// Maximum number of attempts to find the process
-    #[arg(short = 'r', long, default_value = "10")]
+#[derive(Debug, Clone, Deserialize)]
+pub struct Config {
+    pub process_name: String,
+    #[serde(default)]
+    pub key_sequence: Vec<KeyAction>,
+    #[serde(default)]
+    pub independent_keys: Vec<IndependentKey>,
+    #[serde(default = "default_max_retries")]
     pub max_retries: u32,
-
-    /// Hotkey to pause/resume (e.g., "ctrl+alt+r")
-    #[arg(long)]
-    pub pause_hotkey: Option<String>,
-
-    /// Enable verbose output
-    #[arg(short, long)]
+    #[serde(default = "default_pause_hotkey")]
+    pub pause_hotkey: String,
+    #[serde(default)]
     pub verbose: bool,
-
-    /// Load configuration from file
-    #[arg(short, long)]
-    pub config: Option<String>,
-
-    /// Save current configuration to file
-    #[arg(long)]
-    pub save_config: Option<String>,
-
-    /// Loop the sequence indefinitely
-    #[arg(long, default_value = "true")]
+    #[serde(default = "default_loop_sequence")]
     pub loop_sequence: bool,
-
-    /// Number of times to repeat the sequence (0 = infinite)
-    #[arg(long, default_value = "0")]
+    #[serde(default)]
     pub repeat_count: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct KeyAction {
     pub key: String,
+    #[serde(deserialize_with = "deserialize_duration")]
     pub interval_after: Duration,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct IndependentKey {
     pub key: String,
+    #[serde(deserialize_with = "deserialize_duration")]
     pub interval: Duration,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Config {
-    pub process_name: String,
-    pub key_sequence: Vec<KeyAction>,
-    pub independent_keys: Vec<IndependentKey>,
-    pub max_retries: u32,
-    pub pause_hotkey: Option<String>,
-    pub verbose: bool,
-    pub loop_sequence: bool,
-    pub repeat_count: u32,
+// Custom deserializer for duration strings like "1000ms", "5s", "1m"
+fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    parse_duration(&s).map_err(serde::de::Error::custom)
+}
+
+// Parse duration from string
+pub fn parse_duration(s: &str) -> Result<Duration> {
+    let s = s.trim().to_lowercase();
+
+    // Handle different formats
+    if s.ends_with("ms") {
+        let num_str = &s[..s.len() - 2];
+        let ms: u64 = num_str.parse()
+            .map_err(|_| anyhow::anyhow!("Invalid milliseconds value: {}", num_str))?;
+        Ok(Duration::from_millis(ms))
+    } else if s.ends_with('s') {
+        let num_str = &s[..s.len() - 1];
+        let secs: u64 = num_str.parse()
+            .map_err(|_| anyhow::anyhow!("Invalid seconds value: {}", num_str))?;
+        Ok(Duration::from_secs(secs))
+    } else if s.ends_with('m') {
+        let num_str = &s[..s.len() - 1];
+        let mins: u64 = num_str.parse()
+            .map_err(|_| anyhow::anyhow!("Invalid minutes value: {}", num_str))?;
+        Ok(Duration::from_secs(mins * 60))
+    } else {
+        // Default to milliseconds if no suffix
+        let ms: u64 = s.parse()
+            .map_err(|_| anyhow::anyhow!("Invalid duration value: {}", s))?;
+        Ok(Duration::from_millis(ms))
+    }
+}
+
+// Default values
+fn default_max_retries() -> u32 {
+    10
+}
+
+fn default_pause_hotkey() -> String {
+    "ctrl+alt+r".to_string()
+}
+
+fn default_loop_sequence() -> bool {
+    true
 }
 
 impl Config {
-    pub fn from_args(args: Args) -> Result<Self> {
-        let mut config = if let Some(config_path) = &args.config {
-            Self::load_from_file(config_path)?
-        } else {
-            Self::default()
-        };
+    /// Load configuration from a JSON file
+    pub fn from_file(path: &str) -> Result<Self> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("Failed to read config file '{}': {}", path, e))?;
 
-        // Override with CLI arguments (only if provided)
-        if let Some(process) = args.process {
-            config.process_name = process;
-        }
-
-        config.max_retries = args.max_retries;
-        config.verbose = args.verbose;
-        config.loop_sequence = args.loop_sequence;
-        config.repeat_count = args.repeat_count;
-
-        if args.pause_hotkey.is_some() {
-            config.pause_hotkey = args.pause_hotkey;
-        }
-
-        // Parse independent keys first (takes priority)
-        if let Some(independent_str) = args.independent_keys {
-            config.independent_keys = Self::parse_independent_keys(&independent_str)?;
-            config.key_sequence.clear(); // Clear sequence mode
-        }
-        // Parse key sequence
-        else if let Some(sequence_str) = args.sequence {
-            config.key_sequence = Self::parse_key_sequence(&sequence_str)?;
-            config.independent_keys.clear(); // Clear independent mode
-        }
-        // Single key mode
-        else if let Some(single_key) = args.key {
-            config.key_sequence = vec![KeyAction {
-                key: single_key,
-                interval_after: Duration::from_millis(args.interval),
-            }];
-            config.independent_keys.clear(); // Clear independent mode
-        }
-
-        // Validate that we have a process name
-        if config.process_name.is_empty() {
-            anyhow::bail!("No process name specified. Use --process or provide a config file with process_name.");
-        }
-
-        // Validate that we have at least one key action
-        if config.key_sequence.is_empty() && config.independent_keys.is_empty() {
-            anyhow::bail!("No key actions specified. Use --key, --sequence, or --independent-keys, or provide a config file with key actions.");
-        }
-
-        // Save config if requested
-        if let Some(save_path) = &args.save_config {
-            config.save_to_file(save_path)?;
-        }
+        let config: Config = serde_json::from_str(&content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse config file '{}': {}", path, e))?;
 
         Ok(config)
     }
 
-    fn parse_independent_keys(keys_str: &str) -> Result<Vec<IndependentKey>> {
-        let mut keys = Vec::new();
+    /// Save configuration to a JSON file
+    pub fn save_to_file(&self, path: &str) -> Result<()> {
+        // Convert Duration back to string format for saving
+        let mut config_for_save = self.clone();
 
-        for part in keys_str.split(';') {
-            let part = part.trim();
-            if part.is_empty() {
-                continue;
-            }
+        // We need to serialize with string durations for human readability
+        let json = serde_json::to_string_pretty(&ConfigForSave::from(config_for_save))
+            .map_err(|e| anyhow::anyhow!("Failed to serialize config: {}", e))?;
 
-            let components: Vec<&str> = part.split(':').collect();
-            match components.len() {
-                1 => {
-                    // Just a key, use default interval of 1000ms
-                    keys.push(IndependentKey {
-                        key: components[0].trim().to_string(),
-                        interval: Duration::from_millis(1000),
-                    });
-                }
-                2 => {
-                    // Key with custom interval
-                    let key = components[0].trim().to_string();
-                    let interval = components[1].trim().parse::<u64>()
-                        .map_err(|_| anyhow::anyhow!("Invalid interval '{}' for key '{}'", components[1], key))?;
+        std::fs::write(path, json)
+            .map_err(|e| anyhow::anyhow!("Failed to write config file '{}': {}", path, e))?;
 
-                    keys.push(IndependentKey {
-                        key,
-                        interval: Duration::from_millis(interval),
-                    });
-                }
-                _ => {
-                    anyhow::bail!("Invalid independent key format '{}'. Use 'key:interval' or just 'key'", part);
-                }
-            }
-        }
-
-        if keys.is_empty() {
-            anyhow::bail!("Empty independent keys provided");
-        }
-
-        Ok(keys)
-    }
-
-    fn parse_key_sequence(sequence_str: &str) -> Result<Vec<KeyAction>> {
-        let mut actions = Vec::new();
-
-        for part in sequence_str.split(',') {
-            let part = part.trim();
-            if part.is_empty() {
-                continue;
-            }
-
-            let components: Vec<&str> = part.split(':').collect();
-            match components.len() {
-                1 => {
-                    actions.push(KeyAction {
-                        key: components[0].trim().to_string(),
-                        interval_after: Duration::from_millis(1000),
-                    });
-                }
-                2 => {
-                    let key = components[0].trim().to_string();
-                    let interval = components[1].trim().parse::<u64>()
-                        .map_err(|_| anyhow::anyhow!("Invalid interval '{}' in sequence", components[1]))?;
-
-                    actions.push(KeyAction {
-                        key,
-                        interval_after: Duration::from_millis(interval),
-                    });
-                }
-                _ => {
-                    anyhow::bail!("Invalid sequence format '{}'. Use 'key:interval' or just 'key'", part);
-                }
-            }
-        }
-
-        if actions.is_empty() {
-            anyhow::bail!("Empty key sequence provided");
-        }
-
-        Ok(actions)
-    }
-
-    fn load_from_file(path: &str) -> Result<Self> {
-        let content = std::fs::read_to_string(path)?;
-        let config: Config = serde_json::from_str(&content)?;
-        Ok(config)
-    }
-
-    fn save_to_file(&self, path: &str) -> Result<()> {
-        let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, content)?;
-        println!("Configuration saved to: {}", path);
         Ok(())
     }
 
-    pub fn is_independent_mode(&self) -> bool {
-        !self.independent_keys.is_empty()
-    }
+    /// Validate the configuration
+    #[allow(dead_code)]
+    pub fn validate(&self) -> Result<()> {
+        if self.process_name.trim().is_empty() {
+            anyhow::bail!("process_name cannot be empty");
+        }
 
-    pub fn get_independent_keys_description(&self) -> String {
-        self.independent_keys.iter()
-            .map(|key| format!("'{}' every {}ms", key.key, key.interval.as_millis()))
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
+        if self.key_sequence.is_empty() && self.independent_keys.is_empty() {
+            anyhow::bail!("At least one key_sequence or independent_keys entry is required");
+        }
 
-    pub fn total_sequence_duration(&self) -> Duration {
-        self.key_sequence.iter()
-            .map(|action| action.interval_after)
-            .sum()
-    }
+        if !self.key_sequence.is_empty() && !self.independent_keys.is_empty() {
+            anyhow::bail!("Cannot specify both key_sequence and independent_keys. Choose one mode.");
+        }
 
-    pub fn get_sequence_description(&self) -> String {
-        self.key_sequence.iter()
-            .map(|action| format!("'{}' ({}ms)", action.key, action.interval_after.as_millis()))
-            .collect::<Vec<_>>()
-            .join(" → ")
+        if self.max_retries == 0 {
+            anyhow::bail!("max_retries must be greater than 0");
+        }
+
+        // Validate key sequences
+        for (i, key_action) in self.key_sequence.iter().enumerate() {
+            if key_action.key.trim().is_empty() {
+                anyhow::bail!("key_sequence[{}]: key cannot be empty", i);
+            }
+            if key_action.interval_after < Duration::from_millis(1) {
+                anyhow::bail!("key_sequence[{}]: interval_after must be at least 1ms", i);
+            }
+        }
+
+        // Validate independent keys
+        for (i, independent_key) in self.independent_keys.iter().enumerate() {
+            if independent_key.key.trim().is_empty() {
+                anyhow::bail!("independent_keys[{}]: key cannot be empty", i);
+            }
+            if independent_key.interval < Duration::from_millis(1) {
+                anyhow::bail!("independent_keys[{}]: interval must be at least 1ms", i);
+            }
+        }
+
+        Ok(())
     }
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            process_name: String::new(),
-            key_sequence: vec![KeyAction {
+// Helper struct for saving config with string durations
+#[derive(serde::Serialize)]
+struct ConfigForSave {
+    process_name: String,
+    key_sequence: Vec<KeyActionForSave>,
+    independent_keys: Vec<IndependentKeyForSave>,
+    max_retries: u32,
+    pause_hotkey: String,
+    verbose: bool,
+    loop_sequence: bool,
+    repeat_count: u32,
+}
+
+#[derive(serde::Serialize)]
+struct KeyActionForSave {
+    key: String,
+    interval_after: String,
+}
+
+#[derive(serde::Serialize)]
+struct IndependentKeyForSave {
+    key: String,
+    interval: String,
+}
+
+impl From<Config> for ConfigForSave {
+    fn from(config: Config) -> Self {
+        ConfigForSave {
+            process_name: config.process_name,
+            key_sequence: config.key_sequence.into_iter().map(|ka| KeyActionForSave {
+                key: ka.key,
+                interval_after: duration_to_string(ka.interval_after),
+            }).collect(),
+            independent_keys: config.independent_keys.into_iter().map(|ik| IndependentKeyForSave {
+                key: ik.key,
+                interval: duration_to_string(ik.interval),
+            }).collect(),
+            max_retries: config.max_retries,
+            pause_hotkey: config.pause_hotkey,
+            verbose: config.verbose,
+            loop_sequence: config.loop_sequence,
+            repeat_count: config.repeat_count,
+        }
+    }
+}
+
+fn duration_to_string(duration: Duration) -> String {
+    let ms = duration.as_millis();
+
+    if ms >= 60000 && ms % 60000 == 0 {
+        format!("{}m", ms / 60000)
+    } else if ms >= 1000 && ms % 1000 == 0 {
+        format!("{}s", ms / 1000)
+    } else {
+        format!("{}ms", ms)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_duration() {
+        assert_eq!(parse_duration("1000ms").unwrap(), Duration::from_millis(1000));
+        assert_eq!(parse_duration("5s").unwrap(), Duration::from_secs(5));
+        assert_eq!(parse_duration("2m").unwrap(), Duration::from_secs(120));
+        assert_eq!(parse_duration("500").unwrap(), Duration::from_millis(500));
+        assert_eq!(parse_duration(" 1000MS ").unwrap(), Duration::from_millis(1000));
+    }
+
+    #[test]
+    fn test_parse_duration_errors() {
+        assert!(parse_duration("abc").is_err());
+        assert!(parse_duration("").is_err());
+        assert!(parse_duration("1000x").is_err());
+    }
+
+    #[test]
+    fn test_duration_to_string() {
+        assert_eq!(duration_to_string(Duration::from_millis(1000)), "1s");
+        assert_eq!(duration_to_string(Duration::from_millis(1500)), "1500ms");
+        assert_eq!(duration_to_string(Duration::from_millis(60000)), "1m");
+        assert_eq!(duration_to_string(Duration::from_millis(500)), "500ms");
+    }
+
+    #[test]
+    fn test_config_parsing() {
+        let json = r#"
+        {
+            "process_name": "test.exe",
+            "independent_keys": [
+                {
+                    "key": "r",
+                    "interval": "1000ms"
+                },
+                {
+                    "key": "a",
+                    "interval": "5s"
+                }
+            ]
+        }
+        "#;
+
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.process_name, "test.exe");
+        assert_eq!(config.independent_keys.len(), 2);
+        assert_eq!(config.independent_keys[0].key, "r");
+        assert_eq!(config.independent_keys[0].interval, Duration::from_millis(1000));
+        assert_eq!(config.independent_keys[1].key, "a");
+        assert_eq!(config.independent_keys[1].interval, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn test_config_validation() {
+        let mut config = Config {
+            process_name: "test.exe".to_string(),
+            key_sequence: vec![],
+            independent_keys: vec![IndependentKey {
                 key: "r".to_string(),
-                interval_after: Duration::from_millis(1000),
+                interval: Duration::from_millis(1000),
             }],
-            independent_keys: Vec::new(),
             max_retries: 10,
-            pause_hotkey: Some("ctrl+alt+r".to_string()),
+            pause_hotkey: "ctrl+alt+r".to_string(),
             verbose: false,
             loop_sequence: true,
             repeat_count: 0,
-        }
+        };
+
+        assert!(config.validate().is_ok());
+
+        // Test empty process name
+        config.process_name = "".to_string();
+        assert!(config.validate().is_err());
+
+        // Test no keys
+        config.process_name = "test.exe".to_string();
+        config.independent_keys.clear();
+        assert!(config.validate().is_err());
     }
 }

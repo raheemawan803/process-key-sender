@@ -1,6 +1,7 @@
-//! Process Key Sender Library
+//! Process Key Sender - Cross-platform keystroke automation tool
 //!
-//! A library for sending keystrokes to specific processes across different platforms.
+//! This library provides functionality to send keystrokes to specific processes
+//! with configurable intervals and patterns.
 
 pub mod config;
 pub mod key_sender;

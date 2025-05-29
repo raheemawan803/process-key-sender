@@ -1,365 +1,399 @@
+use anyhow::Result;
+use clap::{Arg, Command};
+use colored::Colorize;
+use std::time::Duration;
+use tokio::time::sleep;
+
 mod config;
 mod key_sender;
 mod process_finder;
 
-use anyhow::Result;
-use clap::Parser;
-use colored::*;
-use log::{info, warn, error};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::time;
-use tokio::task::JoinSet;
-
-use crate::config::{Args, Config, IndependentKey};
-use crate::key_sender::KeySender;
-use crate::process_finder::ProcessFinder;
+use config::Config;
+use key_sender::KeySender;
+use process_finder::ProcessFinder;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::init();
+    let matches = Command::new("Process Key Sender")
+        .version("0.1.1")
+        .author("KyleDerZweite <kyle@process-key-sender.dev>")
+        .about("Cross-platform keystroke automation tool for specific processes")
+        .arg(
+            Arg::new("config")
+                .short('c')
+                .long("config")
+                .value_name("FILE")
+                .help("Configuration file path")
+        )
+        .arg(
+            Arg::new("process")
+                .short('p')
+                .long("process")
+                .value_name("PROCESS")
+                .help("Target process name (e.g., 'notepad.exe')")
+        )
+        .arg(
+            Arg::new("key")
+                .short('k')
+                .long("key")
+                .value_name("KEY")
+                .help("Key to send (e.g., 'space', 'a', 'ctrl+c')")
+        )
+        .arg(
+            Arg::new("interval")
+                .short('i')
+                .long("interval")
+                .value_name("DURATION")
+                .help("Interval between key presses (e.g., '1000ms', '5s')")
+                .default_value("1000ms")
+        )
+        .arg(
+            Arg::new("verbose")
+                .short('v')
+                .long("verbose")
+                .help("Enable verbose output")
+                .action(clap::ArgAction::SetTrue)
+        )
+        .arg(
+            Arg::new("save-config")
+                .long("save-config")
+                .value_name("FILE")
+                .help("Save current CLI arguments to configuration file")
+        )
+        .arg(
+            Arg::new("max-retries")
+                .long("max-retries")
+                .value_name("COUNT")
+                .help("Maximum retries to find process")
+                .default_value("10")
+        )
+        .get_matches();
 
-    let args = Args::parse();
-    let config = Config::from_args(args)?;
+    // Handle config file loading or CLI argument parsing
+    let config = if let Some(config_file) = matches.get_one::<String>("config") {
+        load_config_file(config_file)?
+    } else {
+        create_config_from_args(&matches)?
+    };
 
-    // Display header and disclaimer
-    display_header_and_disclaimer();
+    // Save config if requested
+    if let Some(save_path) = matches.get_one::<String>("save-config") {
+        config.save_to_file(save_path)?;
+        println!("{} Configuration saved to: {}", "✓".green(), save_path.cyan());
+        return Ok(());
+    }
 
-    let app = App::new(config)?;
-    app.run().await
+    // Validate configuration
+    validate_config(&config)?;
+
+    // Print startup information
+    print_startup_info(&config);
+
+    // Initialize components
+    let mut process_finder = ProcessFinder::new();
+    let key_sender = KeySender::new()?;
+
+    // Main execution loop
+    run_automation(config, &mut process_finder, &key_sender).await
 }
 
-fn display_header_and_disclaimer() {
-    println!("{}", "Process Key Sender v0.1.0".bright_cyan().bold());
-    println!("{}", "by KyleDerZweite".dimmed());
-    println!();
+fn load_config_file(config_file: &str) -> Result<Config> {
+    println!("{} Loading configuration from: {}", "📁".blue(), config_file.cyan());
 
-    // Disclaimer warning
-    println!("{}", "⚠️  DISCLAIMER WARNING ⚠️".bright_red().bold());
-    println!("{}", "This tool is intended for offline/single-player games ONLY!".bright_yellow());
-    println!("{}", "DO NOT use with online games or anti-cheat systems.".bright_yellow());
-    println!("{}", "Using this tool with online games may result in permanent bans.".bright_red());
-    println!("{}", "Use at your own risk and responsibility.".dimmed());
-    println!();
+    match Config::from_file(config_file) {
+        Ok(config) => {
+            println!("{} Configuration loaded successfully", "✓".green());
+            Ok(config)
+        }
+        Err(e) => {
+            eprintln!("{} Failed to load configuration: {}", "✗".red(), e);
+            anyhow::bail!("Configuration loading failed: {}", e);
+        }
+    }
 }
 
-struct App {
+fn create_config_from_args(matches: &clap::ArgMatches) -> Result<Config> {
+    let process_name = matches.get_one::<String>("process")
+        .ok_or_else(|| anyhow::anyhow!("Process name is required. Use --process or --config."))?
+        .clone();
+
+    let key = matches.get_one::<String>("key")
+        .ok_or_else(|| anyhow::anyhow!("Key is required. Use --key or --config."))?
+        .clone();
+
+    let interval_str = matches.get_one::<String>("interval").unwrap();
+    let interval = parse_duration(interval_str)?;
+
+    let max_retries: u32 = matches.get_one::<String>("max-retries")
+        .unwrap()
+        .parse()?;
+
+    let verbose = matches.get_flag("verbose");
+
+    Ok(Config {
+        process_name,
+        key_sequence: vec![config::KeyAction {
+            key,
+            interval_after: interval,
+        }],
+        independent_keys: vec![],
+        max_retries,
+        pause_hotkey: "ctrl+alt+r".to_string(),
+        verbose,
+        loop_sequence: true,
+        repeat_count: 0,
+    })
+}
+
+fn parse_duration(s: &str) -> Result<Duration> {
+    let s = s.trim().to_lowercase();
+
+    if s.ends_with("ms") {
+        let num_str = &s[..s.len() - 2];
+        let ms: u64 = num_str.parse()?;
+        Ok(Duration::from_millis(ms))
+    } else if s.ends_with('s') {
+        let num_str = &s[..s.len() - 1];
+        let secs: u64 = num_str.parse()?;
+        Ok(Duration::from_secs(secs))
+    } else if s.ends_with('m') {
+        let num_str = &s[..s.len() - 1];
+        let mins: u64 = num_str.parse()?;
+        Ok(Duration::from_secs(mins * 60))
+    } else {
+        // Default to milliseconds if no suffix
+        let ms: u64 = s.parse()?;
+        Ok(Duration::from_millis(ms))
+    }
+}
+
+fn validate_config(config: &Config) -> Result<()> {
+    if config.process_name.is_empty() {
+        anyhow::bail!("Process name cannot be empty");
+    }
+
+    if config.key_sequence.is_empty() && config.independent_keys.is_empty() {
+        anyhow::bail!("At least one key sequence or independent key must be configured");
+    }
+
+    if !config.key_sequence.is_empty() && !config.independent_keys.is_empty() {
+        anyhow::bail!("Cannot use both key_sequence and independent_keys simultaneously. Choose one mode.");
+    }
+
+    if config.max_retries == 0 {
+        anyhow::bail!("max_retries must be greater than 0");
+    }
+
+    // Validate all keys
+    let key_sender = KeySender::new()?;
+
+    for key_action in &config.key_sequence {
+        validate_key(&key_sender, &key_action.key)?;
+        if key_action.interval_after < Duration::from_millis(50) {
+            println!("{} Warning: Very short interval ({}ms) for key '{}' may cause issues",
+                     "⚠".yellow(),
+                     key_action.interval_after.as_millis(),
+                     key_action.key
+            );
+        }
+    }
+
+    for independent_key in &config.independent_keys {
+        validate_key(&key_sender, &independent_key.key)?;
+        if independent_key.interval < Duration::from_millis(50) {
+            println!("{} Warning: Very short interval ({}ms) for key '{}' may cause issues",
+                     "⚠".yellow(),
+                     independent_key.interval.as_millis(),
+                     independent_key.key
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_key(key_sender: &KeySender, key: &str) -> Result<()> {
+    // Try to parse the key to ensure it's valid
+    key_sender.parse_key_for_validation(key)
+        .map_err(|e| anyhow::anyhow!("Invalid key '{}': {}", key, e))?;
+    Ok(())
+}
+
+fn print_startup_info(config: &Config) {
+    println!("\n{}", "🚀 Process Key Sender v0.1.1".bold().cyan());
+    println!("{}", "═".repeat(40).cyan());
+
+    println!("{} Target Process: {}", "🎯".blue(), config.process_name.yellow());
+    println!("{} Max Retries: {}", "🔄".blue(), config.max_retries.to_string().yellow());
+    println!("{} Pause Hotkey: {}", "⏸".blue(), config.pause_hotkey.yellow());
+    println!("{} Verbose Mode: {}", "📝".blue(), if config.verbose { "ON".green() } else { "OFF".red() });
+
+    if !config.key_sequence.is_empty() {
+        println!("\n{} Key Sequence Mode:", "⌨".blue());
+        for (i, key_action) in config.key_sequence.iter().enumerate() {
+            println!("  {}. {} (wait {}ms)",
+                     i + 1,
+                     key_action.key.cyan(),
+                     key_action.interval_after.as_millis().to_string().yellow()
+            );
+        }
+        println!("  {} Loop: {}", "🔁".blue(), if config.loop_sequence { "YES".green() } else { "NO".red() });
+        if config.repeat_count > 0 {
+            println!("  {} Repeat Count: {}", "🔢".blue(), config.repeat_count.to_string().yellow());
+        }
+    }
+
+    if !config.independent_keys.is_empty() {
+        println!("\n{} Independent Keys Mode:", "⌨".blue());
+        for independent_key in &config.independent_keys {
+            println!("  {} every {}ms",
+                     independent_key.key.cyan(),
+                     independent_key.interval.as_millis().to_string().yellow()
+            );
+        }
+    }
+
+    println!("{}", "═".repeat(40).cyan());
+    println!("{} Press Ctrl+C to stop\n", "ℹ".blue());
+}
+
+async fn run_automation(
     config: Config,
-    key_sender: Arc<KeySender>,
-    process_finder: ProcessFinder,
-    running: Arc<AtomicBool>,
-    paused: Arc<AtomicBool>,
+    process_finder: &mut ProcessFinder,
+    key_sender: &KeySender
+) -> Result<()> {
+    // Find target process
+    let window_id = find_target_process(&config, process_finder).await?;
+
+    println!("{} Process found! Starting automation...", "✓".green());
+
+    // Run appropriate automation mode
+    if !config.independent_keys.is_empty() {
+        run_independent_keys(&config, key_sender, window_id).await
+    } else {
+        run_key_sequence(&config, key_sender, window_id).await
+    }
 }
 
-impl App {
-    fn new(config: Config) -> Result<Self> {
-        let running = Arc::new(AtomicBool::new(true));
-        let paused = Arc::new(AtomicBool::new(false));
+async fn find_target_process(config: &Config, process_finder: &mut ProcessFinder) -> Result<u64> {
+    println!("{} Searching for process: {}", "🔍".blue(), config.process_name.yellow());
 
-        let key_sender = Arc::new(KeySender::new()?);
-        let process_finder = ProcessFinder::new();
-
-        // Setup Ctrl+C handler
-        let running_clone = Arc::clone(&running);
-        ctrlc::set_handler(move || {
-            running_clone.store(false, Ordering::SeqCst);
-        })?;
-
-        Ok(Self {
-            config,
-            key_sender,
-            process_finder,
-            running,
-            paused,
-        })
-    }
-
-    async fn run(&self) -> Result<()> {
-        info!("Starting Process Key Sender");
-
-        // Display configuration
-        self.display_config();
-
-        // Setup hotkeys if enabled
-        if let Some(ref hotkey) = self.config.pause_hotkey {
-            self.setup_pause_hotkey(hotkey)?;
+    for attempt in 1..=config.max_retries {
+        if config.verbose {
+            println!("  Attempt {}/{}", attempt, config.max_retries);
         }
 
-        // Find target process
-        let target_window = self.find_target_process().await?;
-
-        println!("{}", "✓ Process found and ready!".bright_green());
-
-        if self.config.is_independent_mode() {
-            println!("{}", "Independent key mode:".bright_blue());
-            println!("  {}", self.config.get_independent_keys_description());
-            println!("  {}", "Keys will run simultaneously on their own timers".dimmed());
-        } else if self.config.key_sequence.len() == 1 {
-            let action = &self.config.key_sequence[0];
-            println!("{}", format!("Sending '{}' every {}ms",
-                                   action.key.bright_yellow(),
-                                   action.interval_after.as_millis()).bright_blue());
-        } else {
-            println!("{}", "Key sequence:".bright_blue());
-            println!("  {}", self.config.get_sequence_description());
-            println!("  {}", format!("Total cycle time: {}ms",
-                                     self.config.total_sequence_duration().as_millis()).dimmed());
-
-            if self.config.loop_sequence {
-                if self.config.repeat_count > 0 {
-                    println!("  {}", format!("Will repeat {} times", self.config.repeat_count).dimmed());
-                } else {
-                    println!("  {}", "Will loop indefinitely".dimmed());
-                }
-            } else {
-                println!("  {}", "Will run once".dimmed());
-            }
-        }
-
-        if self.config.pause_hotkey.is_some() {
-            println!("{}", format!("Press {} to pause/resume",
-                                   self.config.pause_hotkey.as_ref().unwrap().bright_magenta()));
-        }
-        println!("{}", "Press Ctrl+C to exit".dimmed());
-        println!();
-
-        // Choose execution mode
-        if self.config.is_independent_mode() {
-            self.independent_execution_loop(target_window).await
-        } else {
-            self.sequential_execution_loop(target_window).await
-        }
-    }
-
-    fn display_config(&self) {
-        println!("{}", "Configuration:".bright_white().underline());
-        println!("  Process: {}", self.config.process_name.bright_yellow());
-
-        if self.config.is_independent_mode() {
-            println!("  Mode: Independent keys");
-            for (i, key) in self.config.independent_keys.iter().enumerate() {
-                println!("    {}: '{}' every {}ms",
-                         (i + 1).to_string().bright_cyan(),
-                         key.key.bright_yellow(),
-                         key.interval.as_millis());
-            }
-        } else if self.config.key_sequence.len() == 1 {
-            let action = &self.config.key_sequence[0];
-            println!("  Key: {}", action.key.bright_yellow());
-            println!("  Interval: {}ms", action.interval_after.as_millis());
-        } else {
-            println!("  Mode: Sequential keys");
-            for (i, action) in self.config.key_sequence.iter().enumerate() {
-                println!("    {}: '{}' → wait {}ms",
-                         (i + 1).to_string().bright_cyan(),
-                         action.key.bright_yellow(),
-                         action.interval_after.as_millis());
-            }
-        }
-
-        println!("  Max attempts: {}", self.config.max_retries);
-        if let Some(ref hotkey) = self.config.pause_hotkey {
-            println!("  Pause hotkey: {}", hotkey.bright_magenta());
-        }
-        println!();
-    }
-
-    async fn find_target_process(&self) -> Result<u64> {
-        println!("{}", format!("🔍 Looking for process: {}", self.config.process_name).bright_blue());
-
-        let mut attempts = 0;
-        let mut process_finder = self.process_finder.clone();
-
-        while attempts < self.config.max_retries && self.running.load(Ordering::SeqCst) {
-            if let Some(window_id) = process_finder.find_process_window(&self.config.process_name)? {
+        match process_finder.find_process_window(&config.process_name) {
+            Ok(Some(window_id)) => {
+                println!("{} Found process window (ID: {})", "✓".green(), window_id.to_string().cyan());
                 return Ok(window_id);
             }
-
-            attempts += 1;
-            if attempts < self.config.max_retries {
-                println!("{}", format!("Process not found, retrying... ({}/{})",
-                                       attempts, self.config.max_retries).yellow());
-                time::sleep(Duration::from_secs(2)).await;
+            Ok(None) => {
+                if config.verbose {
+                    println!("  Process not found, retrying...");
+                }
+            }
+            Err(e) => {
+                eprintln!("{} Error searching for process: {}", "✗".red(), e);
             }
         }
 
-        anyhow::bail!("Could not find process '{}' after {} attempts",
-            self.config.process_name, self.config.max_retries);
+        if attempt < config.max_retries {
+            sleep(Duration::from_millis(1000)).await;
+        }
     }
 
-    async fn independent_execution_loop(&self, target_window: u64) -> Result<()> {
-        let mut tasks = JoinSet::new();
+    anyhow::bail!("Could not find process '{}' after {} attempts", config.process_name, config.max_retries);
+}
 
-        // Spawn a task for each independent key
-        for key_config in &self.config.independent_keys {
-            let key_sender = Arc::clone(&self.key_sender);
-            let running = Arc::clone(&self.running);
-            let paused = Arc::clone(&self.paused);
-            let process_finder = self.process_finder.clone();
-            let process_name = self.config.process_name.clone();
-            let verbose = self.config.verbose;
-            let key_config = key_config.clone();
+async fn run_independent_keys(config: &Config, key_sender: &KeySender, window_id: u64) -> Result<()> {
+    println!("{} Starting independent keys automation...", "🚀".green());
 
-            tasks.spawn(async move {
-                Self::independent_key_task(
-                    key_sender,
-                    running,
-                    paused,
-                    process_finder,
-                    process_name,
-                    target_window,
-                    key_config,
-                    verbose,
-                ).await
-            });
-        }
+    let mut handles = Vec::new();
 
-        // Wait for all tasks to complete (they run until stopped)
-        while let Some(result) = tasks.join_next().await {
-            if let Err(e) = result {
-                error!("Key task failed: {}", e);
-            }
-        }
+    for independent_key in &config.independent_keys {
+        let key = independent_key.key.clone();
+        let interval = independent_key.interval;
+        let sender = key_sender.clone();
+        let wid = window_id;
+        let verbose = config.verbose;
 
-        println!("{}", "👋 Stopping key sender...".bright_blue());
-        Ok(())
-    }
-
-    async fn independent_key_task(
-        key_sender: Arc<KeySender>,
-        running: Arc<AtomicBool>,
-        paused: Arc<AtomicBool>,
-        mut process_finder: ProcessFinder,
-        process_name: String,
-        target_window: u64,
-        key_config: IndependentKey,
-        verbose: bool,
-    ) {
-        let mut interval = time::interval(key_config.interval);
-        let mut consecutive_failures = 0;
-
-        while running.load(Ordering::SeqCst) {
-            interval.tick().await;
-
-            // Check if process is still running
-            if let Ok(false) = process_finder.is_process_running(&process_name) {
-                warn!("Target process has been closed for key '{}'", key_config.key);
-                break;
-            }
-
-            // Send key if not paused
-            if !paused.load(Ordering::SeqCst) {
-                match key_sender.send_key_to_window(target_window, &key_config.key) {
+        let handle = tokio::spawn(async move {
+            loop {
+                match sender.send_key_to_window(wid, &key) {
                     Ok(_) => {
                         if verbose {
-                            println!("{}", format!("✓ Sent '{}' [{}ms timer]",
-                                                   key_config.key, key_config.interval.as_millis()).green());
+                            println!("✓ Sent key: {}", key.cyan());
                         }
-                        consecutive_failures = 0;
                     }
                     Err(e) => {
-                        consecutive_failures += 1;
-                        warn!("Failed to send key '{}': {}", key_config.key, e);
-
-                        if consecutive_failures >= 5 {
-                            error!("Too many consecutive failures for key '{}', stopping this key task...", key_config.key);
-                            break;
-                        }
+                        eprintln!("{} Error sending key '{}': {}", "✗".red(), key, e);
                     }
                 }
+
+                sleep(interval).await;
             }
+        });
+
+        handles.push(handle);
+    }
+
+    // Wait for Ctrl+C
+    tokio::signal::ctrl_c().await?;
+    println!("\n{} Shutting down...", "🛑".yellow());
+
+    // Cancel all tasks
+    for handle in handles {
+        handle.abort();
+    }
+
+    Ok(())
+}
+
+async fn run_key_sequence(config: &Config, key_sender: &KeySender, window_id: u64) -> Result<()> {
+    println!("{} Starting key sequence automation...", "🚀".green());
+
+    let mut iteration = 0u32;
+
+    loop {
+        iteration += 1;
+
+        if config.verbose {
+            println!("--- Sequence iteration {} ---", iteration.to_string().cyan());
+        }
+
+        for (i, key_action) in config.key_sequence.iter().enumerate() {
+            // Check if we should stop
+            if let Ok(_) = tokio::time::timeout(Duration::from_millis(1), tokio::signal::ctrl_c()).await {
+                println!("\n{} Shutting down...", "🛑".yellow());
+                return Ok(());
+            }
+
+            match key_sender.send_key_to_window(window_id, &key_action.key) {
+                Ok(_) => {
+                    if config.verbose {
+                        println!("  {}. ✓ Sent key: {}", i + 1, key_action.key.cyan());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  {}. {} Error sending key '{}': {}", i + 1, "✗".red(), key_action.key, e);
+                }
+            }
+
+            sleep(key_action.interval_after).await;
+        }
+
+        // Check repeat count
+        if config.repeat_count > 0 && iteration >= config.repeat_count {
+            println!("{} Completed {} iterations", "✓".green(), config.repeat_count.to_string().cyan());
+            break;
+        }
+
+        // Check if we should loop
+        if !config.loop_sequence {
+            break;
         }
     }
 
-    async fn sequential_execution_loop(&self, target_window: u64) -> Result<()> {
-        let mut consecutive_failures = 0;
-        let mut current_sequence_index = 0;
-        let mut cycles_completed = 0;
-        let mut process_finder = self.process_finder.clone();
-
-        while self.running.load(Ordering::SeqCst) {
-            // Check if process is still running
-            if !process_finder.is_process_running(&self.config.process_name)? {
-                println!("{}", "⚠️  Target process has been closed. Stopping...".bright_red());
-                break;
-            }
-
-            // Check if we've completed the required number of cycles
-            if self.config.repeat_count > 0 && cycles_completed >= self.config.repeat_count {
-                println!("{}", format!("✓ Completed {} cycles as requested. Stopping...",
-                                       cycles_completed).bright_green());
-                break;
-            }
-
-            // Send key if not paused
-            if !self.paused.load(Ordering::SeqCst) {
-                let current_action = &self.config.key_sequence[current_sequence_index];
-
-                match self.key_sender.send_key_to_window(target_window, &current_action.key) {
-                    Ok(_) => {
-                        if self.config.verbose {
-                            let step_info = if self.config.key_sequence.len() > 1 {
-                                format!(" [step {}/{}]", current_sequence_index + 1, self.config.key_sequence.len())
-                            } else {
-                                String::new()
-                            };
-
-                            println!("{}", format!("✓ Sent '{}'{}",
-                                                   current_action.key, step_info).green());
-                        }
-                        consecutive_failures = 0;
-                    }
-                    Err(e) => {
-                        consecutive_failures += 1;
-                        warn!("Failed to send key '{}': {}", current_action.key, e);
-
-                        if consecutive_failures >= 5 {
-                            error!("Too many consecutive failures, stopping...");
-                            break;
-                        }
-                    }
-                }
-
-                // Wait for the interval specified for this key
-                time::sleep(current_action.interval_after).await;
-
-                // Move to next key in sequence
-                current_sequence_index += 1;
-
-                // Check if we've completed the sequence
-                if current_sequence_index >= self.config.key_sequence.len() {
-                    cycles_completed += 1;
-
-                    if self.config.verbose && self.config.key_sequence.len() > 1 {
-                        println!("{}", format!("🔄 Completed cycle {} of sequence",
-                                               cycles_completed).bright_blue());
-                    }
-
-                    if self.config.loop_sequence {
-                        current_sequence_index = 0; // Reset to beginning
-                    } else {
-                        // Single run, we're done
-                        println!("{}", "✓ Sequence completed (single run). Stopping...".bright_green());
-                        break;
-                    }
-                }
-            } else {
-                if self.config.verbose {
-                    println!("{}", "⏸️  Paused".yellow());
-                }
-                time::sleep(Duration::from_millis(100)).await; // Small sleep when paused
-            }
-        }
-
-        println!("{}", "👋 Stopping key sender...".bright_blue());
-        Ok(())
-    }
-
-    fn setup_pause_hotkey(&self, _hotkey: &str) -> Result<()> {
-        // TODO: Implement global hotkey setup
-        // This would require parsing the hotkey string and setting up global hotkey manager
-        info!("Hotkey setup not yet implemented");
-        Ok(())
-    }
+    Ok(())
 }

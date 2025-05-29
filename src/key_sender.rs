@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use winapi::um::winuser::{
     PostMessageA, WM_KEYDOWN, WM_KEYUP, VK_SPACE, VK_RETURN, VK_TAB,
     VK_ESCAPE, VK_SHIFT, VK_CONTROL, VK_MENU, EnumWindows, GetWindowThreadProcessId,
-    IsWindowVisible, GetWindowTextA
+    IsWindowVisible, GetWindowTextA, SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT
 };
 #[cfg(windows)]
 use winapi::shared::windef::HWND;
@@ -13,6 +13,12 @@ use winapi::shared::windef::HWND;
 pub struct KeySender {
     #[cfg(windows)]
     key_map: HashMap<String, u32>,
+}
+
+impl Clone for KeySender {
+    fn clone(&self) -> Self {
+        Self::new().unwrap()
+    }
 }
 
 impl KeySender {
@@ -63,6 +69,24 @@ impl KeySender {
         #[cfg(unix)]
         {
             Ok(Self)
+        }
+    }
+
+    /// Validate a key string without actually sending it
+    pub fn parse_key_for_validation(&self, key: &str) -> Result<()> {
+        #[cfg(windows)]
+        {
+            let _ = self.parse_key_windows(key)?;
+            Ok(())
+        }
+
+        #[cfg(unix)]
+        {
+            // For Unix, just do basic validation for now
+            if key.trim().is_empty() {
+                anyhow::bail!("Key cannot be empty");
+            }
+            Ok(())
         }
     }
 
@@ -140,10 +164,7 @@ impl KeySender {
 
     #[cfg(windows)]
     fn send_key_global_windows(&self, key: &str) -> Result<()> {
-        // Global key sending using SendInput or similar
-        // For now, let's use a simple approach
-        use winapi::um::winuser::{SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT};
-
+        // Global key sending using SendInput
         if key.contains('+') {
             return self.send_key_combination_global_windows(key);
         }
@@ -218,9 +239,78 @@ impl KeySender {
     #[cfg(windows)]
     fn send_key_combination_global_windows(&self, key_combo: &str) -> Result<()> {
         // Similar to send_key_combination_windows but using SendInput
-        // Implementation would be similar but using SendInput instead of PostMessage
-        // For brevity, using the PostMessage approach for now
-        self.send_key_combination_windows(0, key_combo)
+        let parts: Vec<&str> = key_combo.split('+').map(|s| s.trim()).collect();
+        if parts.len() < 2 {
+            anyhow::bail!("Invalid key combination format: {}", key_combo);
+        }
+
+        let mut modifier_codes = Vec::new();
+        let main_key = parts.last().unwrap();
+
+        // Parse modifiers
+        for modifier in &parts[..parts.len() - 1] {
+            let vk_code = self.parse_key_windows(modifier)?;
+            modifier_codes.push(vk_code);
+        }
+
+        // Parse main key
+        let main_key_code = self.parse_key_windows(main_key)?;
+
+        unsafe {
+            // Press modifiers
+            for &modifier_code in &modifier_codes {
+                let mut input = INPUT {
+                    type_: INPUT_KEYBOARD,
+                    u: std::mem::zeroed(),
+                };
+                *input.u.ki_mut() = KEYBDINPUT {
+                    wVk: modifier_code as u16,
+                    wScan: 0,
+                    dwFlags: 0,
+                    time: 0,
+                    dwExtraInfo: 0,
+                };
+                SendInput(1, &mut input, std::mem::size_of::<INPUT>() as i32);
+            }
+
+            // Press main key
+            let mut input = INPUT {
+                type_: INPUT_KEYBOARD,
+                u: std::mem::zeroed(),
+            };
+            *input.u.ki_mut() = KEYBDINPUT {
+                wVk: main_key_code as u16,
+                wScan: 0,
+                dwFlags: 0,
+                time: 0,
+                dwExtraInfo: 0,
+            };
+            SendInput(1, &mut input, std::mem::size_of::<INPUT>() as i32);
+
+            std::thread::sleep(std::time::Duration::from_millis(50));
+
+            // Release main key
+            input.u.ki_mut().dwFlags = 0x0002; // KEYEVENTF_KEYUP
+            SendInput(1, &mut input, std::mem::size_of::<INPUT>() as i32);
+
+            // Release modifiers (in reverse order)
+            for &modifier_code in modifier_codes.iter().rev() {
+                let mut input = INPUT {
+                    type_: INPUT_KEYBOARD,
+                    u: std::mem::zeroed(),
+                };
+                *input.u.ki_mut() = KEYBDINPUT {
+                    wVk: modifier_code as u16,
+                    wScan: 0,
+                    dwFlags: 0x0002, // KEYEVENTF_KEYUP
+                    time: 0,
+                    dwExtraInfo: 0,
+                };
+                SendInput(1, &mut input, std::mem::size_of::<INPUT>() as i32);
+            }
+        }
+
+        Ok(())
     }
 
     #[cfg(windows)]
