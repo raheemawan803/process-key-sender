@@ -10,8 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
+use tokio::task::JoinSet;
 
-use crate::config::{Args, Config, KeyAction};
+use crate::config::{Args, Config, IndependentKey};
 use crate::key_sender::KeySender;
 use crate::process_finder::ProcessFinder;
 
@@ -31,7 +32,7 @@ async fn main() -> Result<()> {
 
 fn display_header_and_disclaimer() {
     println!("{}", "Process Key Sender v0.1.0".bright_cyan().bold());
-    println!("{}", "by KyleDerZweite".dim());
+    println!("{}", "by KyleDerZweite".dimmed());
     println!();
 
     // Disclaimer warning
@@ -39,13 +40,13 @@ fn display_header_and_disclaimer() {
     println!("{}", "This tool is intended for offline/single-player games ONLY!".bright_yellow());
     println!("{}", "DO NOT use with online games or anti-cheat systems.".bright_yellow());
     println!("{}", "Using this tool with online games may result in permanent bans.".bright_red());
-    println!("{}", "Use at your own risk and responsibility.".dim());
+    println!("{}", "Use at your own risk and responsibility.".dimmed());
     println!();
 }
 
 struct App {
     config: Config,
-    key_sender: KeySender,
+    key_sender: Arc<KeySender>,
     process_finder: ProcessFinder,
     running: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
@@ -54,9 +55,9 @@ struct App {
 impl App {
     fn new(config: Config) -> Result<Self> {
         let running = Arc::new(AtomicBool::new(true));
-        let paused = Arc<AtomicBool::new(false));
+        let paused = Arc::new(AtomicBool::new(false));
 
-        let key_sender = KeySender::new()?;
+        let key_sender = Arc::new(KeySender::new()?);
         let process_finder = ProcessFinder::new();
 
         // Setup Ctrl+C handler
@@ -90,7 +91,11 @@ impl App {
 
         println!("{}", "✓ Process found and ready!".bright_green());
 
-        if self.config.key_sequence.len() == 1 {
+        if self.config.is_independent_mode() {
+            println!("{}", "Independent key mode:".bright_blue());
+            println!("  {}", self.config.get_independent_keys_description());
+            println!("  {}", "Keys will run simultaneously on their own timers".dimmed());
+        } else if self.config.key_sequence.len() == 1 {
             let action = &self.config.key_sequence[0];
             println!("{}", format!("Sending '{}' every {}ms",
                                    action.key.bright_yellow(),
@@ -99,16 +104,16 @@ impl App {
             println!("{}", "Key sequence:".bright_blue());
             println!("  {}", self.config.get_sequence_description());
             println!("  {}", format!("Total cycle time: {}ms",
-                                     self.config.total_sequence_duration().as_millis()).dim());
+                                     self.config.total_sequence_duration().as_millis()).dimmed());
 
             if self.config.loop_sequence {
                 if self.config.repeat_count > 0 {
-                    println!("  {}", format!("Will repeat {} times", self.config.repeat_count).dim());
+                    println!("  {}", format!("Will repeat {} times", self.config.repeat_count).dimmed());
                 } else {
-                    println!("  {}", "Will loop indefinitely".dim());
+                    println!("  {}", "Will loop indefinitely".dimmed());
                 }
             } else {
-                println!("  {}", "Will run once".dim());
+                println!("  {}", "Will run once".dimmed());
             }
         }
 
@@ -116,23 +121,35 @@ impl App {
             println!("{}", format!("Press {} to pause/resume",
                                    self.config.pause_hotkey.as_ref().unwrap().bright_magenta()));
         }
-        println!("{}", "Press Ctrl+C to exit".dim());
+        println!("{}", "Press Ctrl+C to exit".dimmed());
         println!();
 
-        // Main execution loop
-        self.execution_loop(target_window).await
+        // Choose execution mode
+        if self.config.is_independent_mode() {
+            self.independent_execution_loop(target_window).await
+        } else {
+            self.sequential_execution_loop(target_window).await
+        }
     }
 
     fn display_config(&self) {
         println!("{}", "Configuration:".bright_white().underline());
         println!("  Process: {}", self.config.process_name.bright_yellow());
 
-        if self.config.key_sequence.len() == 1 {
+        if self.config.is_independent_mode() {
+            println!("  Mode: Independent keys");
+            for (i, key) in self.config.independent_keys.iter().enumerate() {
+                println!("    {}: '{}' every {}ms",
+                         (i + 1).to_string().bright_cyan(),
+                         key.key.bright_yellow(),
+                         key.interval.as_millis());
+            }
+        } else if self.config.key_sequence.len() == 1 {
             let action = &self.config.key_sequence[0];
             println!("  Key: {}", action.key.bright_yellow());
             println!("  Interval: {}ms", action.interval_after.as_millis());
         } else {
-            println!("  Sequence: {} keys", self.config.key_sequence.len());
+            println!("  Mode: Sequential keys");
             for (i, action) in self.config.key_sequence.iter().enumerate() {
                 println!("    {}: '{}' → wait {}ms",
                          (i + 1).to_string().bright_cyan(),
@@ -152,9 +169,10 @@ impl App {
         println!("{}", format!("🔍 Looking for process: {}", self.config.process_name).bright_blue());
 
         let mut attempts = 0;
+        let mut process_finder = self.process_finder.clone();
 
         while attempts < self.config.max_retries && self.running.load(Ordering::SeqCst) {
-            if let Some(window_id) = self.process_finder.find_process_window(&self.config.process_name)? {
+            if let Some(window_id) = process_finder.find_process_window(&self.config.process_name)? {
                 return Ok(window_id);
             }
 
@@ -170,14 +188,99 @@ impl App {
             self.config.process_name, self.config.max_retries);
     }
 
-    async fn execution_loop(&self, target_window: u64) -> Result<()> {
+    async fn independent_execution_loop(&self, target_window: u64) -> Result<()> {
+        let mut tasks = JoinSet::new();
+
+        // Spawn a task for each independent key
+        for key_config in &self.config.independent_keys {
+            let key_sender = Arc::clone(&self.key_sender);
+            let running = Arc::clone(&self.running);
+            let paused = Arc::clone(&self.paused);
+            let process_finder = self.process_finder.clone();
+            let process_name = self.config.process_name.clone();
+            let verbose = self.config.verbose;
+            let key_config = key_config.clone();
+
+            tasks.spawn(async move {
+                Self::independent_key_task(
+                    key_sender,
+                    running,
+                    paused,
+                    process_finder,
+                    process_name,
+                    target_window,
+                    key_config,
+                    verbose,
+                ).await
+            });
+        }
+
+        // Wait for all tasks to complete (they run until stopped)
+        while let Some(result) = tasks.join_next().await {
+            if let Err(e) = result {
+                error!("Key task failed: {}", e);
+            }
+        }
+
+        println!("{}", "👋 Stopping key sender...".bright_blue());
+        Ok(())
+    }
+
+    async fn independent_key_task(
+        key_sender: Arc<KeySender>,
+        running: Arc<AtomicBool>,
+        paused: Arc<AtomicBool>,
+        mut process_finder: ProcessFinder,
+        process_name: String,
+        target_window: u64,
+        key_config: IndependentKey,
+        verbose: bool,
+    ) {
+        let mut interval = time::interval(key_config.interval);
+        let mut consecutive_failures = 0;
+
+        while running.load(Ordering::SeqCst) {
+            interval.tick().await;
+
+            // Check if process is still running
+            if let Ok(false) = process_finder.is_process_running(&process_name) {
+                warn!("Target process has been closed for key '{}'", key_config.key);
+                break;
+            }
+
+            // Send key if not paused
+            if !paused.load(Ordering::SeqCst) {
+                match key_sender.send_key_to_window(target_window, &key_config.key) {
+                    Ok(_) => {
+                        if verbose {
+                            println!("{}", format!("✓ Sent '{}' [{}ms timer]",
+                                                   key_config.key, key_config.interval.as_millis()).green());
+                        }
+                        consecutive_failures = 0;
+                    }
+                    Err(e) => {
+                        consecutive_failures += 1;
+                        warn!("Failed to send key '{}': {}", key_config.key, e);
+
+                        if consecutive_failures >= 5 {
+                            error!("Too many consecutive failures for key '{}', stopping this key task...", key_config.key);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    async fn sequential_execution_loop(&self, target_window: u64) -> Result<()> {
         let mut consecutive_failures = 0;
         let mut current_sequence_index = 0;
         let mut cycles_completed = 0;
+        let mut process_finder = self.process_finder.clone();
 
         while self.running.load(Ordering::SeqCst) {
             // Check if process is still running
-            if !self.process_finder.is_process_running(&self.config.process_name)? {
+            if !process_finder.is_process_running(&self.config.process_name)? {
                 println!("{}", "⚠️  Target process has been closed. Stopping...".bright_red());
                 break;
             }
